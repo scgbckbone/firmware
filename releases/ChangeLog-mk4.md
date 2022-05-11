@@ -1,3 +1,6 @@
+## 5.0.4
+- support USB encryption V2
+
 ## 5.0.3 - 2022-05-04
 
 - Enhancement: Support P2TR outputs (pay to Taproot) in PSBT files. Allows

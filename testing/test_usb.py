@@ -1,13 +1,13 @@
 # (c) Copyright 2020 by Coinkite Inc. This file is covered by license found in COPYING-CC.
 #
 # A few USB link layer tests.
-# 
+#
 # - not working well on simulator right now, but that's not key
 #
 import pytest, time, struct
 from pycoin.key.BIP32Node import BIP32Node
 from binascii import b2a_hex, a2b_hex
-from ckcc_protocol.protocol import MAX_MSG_LEN, CCProtocolPacker, CCProtoError
+from ckcc_protocol.protocol import MAX_MSG_LEN, CCProtocolPacker, CCProtoError, AF_P2WPKH
 
 def test_usb_fuzz(dev):
     # test framing logic
@@ -44,7 +44,7 @@ def test_usb_fuzz(dev):
 
     # various length junk messages (single packet)
     for n in [1, 2, 3, 4, 5, 50, 63]:
-        dev.dev.write(bytes([n | 0x80]) + b'abcd' + bytes(64-4-1)) 
+        dev.dev.write(bytes([n | 0x80]) + b'abcd' + bytes(64-4-1))
         resp = llread()
         msg = resp[1:1+(resp[0] & 0x3f)]
         print("Bad length test: %2d => %r" % (n, msg.decode('ascii')))
@@ -62,7 +62,7 @@ def test_usb_fuzz(dev):
         print("stopped @ %d msgs" % n)
         assert resp[1:1+4] == b'fram', resp
         break
-    
+
 
 # note: 0x80000000 = 2147483648
 
@@ -96,7 +96,7 @@ def test_xpub_invalid(dev, path):
 
     with pytest.raises(CCProtoError):
         xpub = dev.send_recv(CCProtocolPacker.get_xpub(path), timeout=None)
-    
+
 
 def test_version(dev):
     # read the version, yawn.
@@ -114,7 +114,7 @@ def test_version(dev):
 @pytest.mark.parametrize('data_len', [1, 24, 60, 61, 62, 63, 64, 1000])
 def test_upload_short(dev, data_len):
     # upload a few really short files
-    
+
     from hashlib import sha256
 
     data = b'a'*data_len
@@ -131,7 +131,7 @@ def test_upload_short(dev, data_len):
 @pytest.mark.parametrize('pkt_len', [256, 1024, 2048])
 def test_upload_long(dev, pkt_len, count=5, data=None):
     # upload a larger "file"
-    
+
     from hashlib import sha256
     import os
 
@@ -183,14 +183,31 @@ def test_encryption(dev):
     assert dev.session_key != was
     assert len(set(dev.session_key)) > 8
 
+def test_encryption_v2(dev):
+    # needs firmware supporting usb encryption V2
+    # Coldcard needs to be reconnected after this test - run alone
+    print("Session key: " + str(b2a_hex(dev.session_key), 'utf'))
+    assert dev.ncry_ver == 1
+    dev.start_encryption_v2()
+    assert dev.ncry_ver == 2
+    with pytest.raises(Exception):
+        dev.start_encryption()
+    with pytest.raises(Exception):
+        dev.start_encryption_v2()
+    assert dev.ncry_ver == 2
+    assert dev.encrypt_request is not None
+    # if above conditions are met - all commands gonna be encrypted
+    addr = dev.send_recv(CCProtocolPacker.show_address("m/84'/0'/0'/0/0", AF_P2WPKH), timeout=None)
+    assert addr
+
 def test_mitm(dev):
-    
+
     # simple check
     dev.check_mitm()
 
     # do again
     sig2 = dev.send_recv(CCProtocolPacker.check_mitm(), timeout=5000)
-    
+
     old_key = dev.session_key
     dev.check_mitm(sig=sig2)
 
