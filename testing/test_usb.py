@@ -183,6 +183,7 @@ def test_encryption(dev):
     assert dev.session_key != was
     assert len(set(dev.session_key)) > 8
 
+@pytest.mark.onetime
 def test_encryption_v2(dev):
     # needs firmware supporting usb encryption V2
     # Coldcard needs to be reconnected after this test - run alone
