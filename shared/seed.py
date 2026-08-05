@@ -643,10 +643,12 @@ def update_entropy_screen(title, count, target, unit, action, prompt, mk_title=N
 
 async def collect_mash_entropy():
     # Collect supplemental entropy from physical key choices and timing.
+    # Estimate per press: ~3.4 bits key choice + ~2 bits timing, quantized by scan cadence.
     from glob import numpad
 
     md = sha256(DOMAIN_MASH)
     count = 0
+    event_count = 0
 
     update_entropy_screen('Mash Keys', count, MIN_MASH_PRESSES,
                           'mashes', 'mashing', 'Press random keys')
@@ -656,7 +658,6 @@ async def collect_mash_entropy():
     while True:
         ch, now = await numpad.get_with_timestamp()
         if ch == (KEY_CANCEL if version.has_qwerty else "x"): return
-        if not ch: continue
 
         if count >= MIN_MASH_PRESSES and ch == (KEY_ENTER if version.has_qwerty else "y"):
             break
@@ -664,7 +665,11 @@ async def collect_mash_entropy():
         gap = ticks_diff(now, last)
         last = now
 
-        md.update(pack('<II', count, gap & 0xffffffff))
+        md.update(pack('<IIB', event_count, gap & 0xffffffff, 1 if ch else 0))
+        event_count += 1
+
+        if not ch: continue
+
         md.update(ch.encode())
         count += 1
 
