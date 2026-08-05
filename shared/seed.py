@@ -633,13 +633,11 @@ def generate_seed():
 def update_entropy_screen(title, count, target, unit, action, prompt, mk_title=None):
     if version.has_qwerty:
         line2 = '%d / %d %s' % (count, target, unit)
-        line3 = ('Keep %s or ENTER when done' % action) \
-                if count >= target else prompt
+        line3 = ('Keep %s or ENTER when done' % action) if count >= target else prompt
         dis.fullscreen(title, percent=count / target, line2=line2, line3=line3)
         return
 
-    line2 = ('%d  OK=Done' % count) if count >= target else \
-            ('%d / %d' % (count, target))
+    line2 = ('%d  OK=Done' % count) if count >= target else ('%d / %d' % (count, target))
     dis.fullscreen(mk_title or title, percent=count / target, line2=line2)
 
 async def collect_mash_entropy():
@@ -658,8 +656,7 @@ async def collect_mash_entropy():
 
     while True:
         ch, now = await numpad.get_with_timestamp()
-        if ch == numpad.ABORT_KEY:
-            raise AbortInteraction()
+        if ch == numpad.ABORT_KEY: raise AbortInteraction()
         if ch == (KEY_CANCEL if version.has_qwerty else "x"): return
 
         if count >= MIN_MASH_PRESSES and ch == (KEY_ENTER if version.has_qwerty else "y"):
@@ -698,8 +695,7 @@ async def collect_dice_entropy():
 
     while True:
         ch, _ = await numpad.get_with_timestamp()
-        if ch == numpad.ABORT_KEY:
-            raise AbortInteraction()
+        if ch == numpad.ABORT_KEY: raise AbortInteraction()
         if ch == (KEY_CANCEL if version.has_qwerty else "x"): return
         if not ch: continue
 
@@ -737,8 +733,7 @@ async def collect_coin_entropy():
 
     while True:
         ch, _ = await numpad.get_with_timestamp()
-        if ch == numpad.ABORT_KEY:
-            raise AbortInteraction()
+        if ch == numpad.ABORT_KEY: raise AbortInteraction()
         if ch == (KEY_CANCEL if version.has_qwerty else "x"): return
         if not ch: continue
 
