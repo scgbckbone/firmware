@@ -769,6 +769,7 @@ async def make_new_wallet(nwords):
     await ux_dramatic_pause('Generating...', 3)
     base_seed = None
     extra_entropy = None
+    mix = None
     choices = MenuSystem([
         MenuItem('Mash Keys', arg=(METHOD_MASH, collect_mash_entropy)),
         MenuItem('Dice Rolls', arg=(METHOD_DICE, collect_dice_entropy)),
@@ -792,11 +793,13 @@ async def make_new_wallet(nwords):
             method, collector = picked.arg
             extra_entropy = await collector()
 
-        seed = ngu.hash.sha256d(DOMAIN_SEED + method + base_seed + extra_entropy)
+        mix = DOMAIN_SEED + method + base_seed + extra_entropy
+        seed = ngu.hash.sha256d(mix)
 
     finally:
         blank_object(base_seed)
         blank_object(extra_entropy)
+        blank_object(mix)
 
     words = await approve_word_list(seed, nwords)
     if words:
@@ -835,15 +838,25 @@ async def set_ephemeral_seed_extended_key(extended_key, origin=None):
 
 async def approve_word_list(seed, nwords, ephemeral=False):
     # Force the user to write the seeds words down, give a quiz, then save them.
+    #
+    # WARNING: consumes `seed` -- it is wiped unconditionally, even on abort
+    # or error. Callers must not reference the seed object after this call.
 
     # LESSON LEARNED: if the user is writting down the words, as we have
     # vividly instructed, then it's a big deal to lose those words and have to start
     # over. So confirm that action, and don't volunteer it.
 
-    if nwords == 12:
-        seed = seed[0:16]
+    seed_bits = None
+    try:
+        seed_bits = seed[0:16] if nwords == 12 else seed
+        words = bip39.b2a_words(seed_bits).split(' ')
+    finally:
+        # Words are authoritative from here on; wipe the source
+        # and any truncated copy.
+        blank_object(seed_bits)
+        if seed_bits is not seed:
+            blank_object(seed)
 
-    words = bip39.b2a_words(seed).split(' ')
     assert len(words) == nwords
     extra_msg = ''
     if ephemeral:
