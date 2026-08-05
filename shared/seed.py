@@ -27,6 +27,7 @@ from pincodes import pa
 from nvstore import SettingsObject
 from files import CardMissingError, needs_microsd
 from charcodes import KEY_QR, KEY_ENTER, KEY_CANCEL, KEY_NFC
+from exceptions import AbortInteraction
 from uasyncio import sleep_ms
 from ucollections import namedtuple
 from utime import ticks_us, ticks_diff
@@ -657,6 +658,8 @@ async def collect_mash_entropy():
 
     while True:
         ch, now = await numpad.get_with_timestamp()
+        if ch == numpad.ABORT_KEY:
+            raise AbortInteraction()
         if ch == (KEY_CANCEL if version.has_qwerty else "x"): return
 
         if count >= MIN_MASH_PRESSES and ch == (KEY_ENTER if version.has_qwerty else "y"):
@@ -695,6 +698,8 @@ async def collect_dice_entropy():
 
     while True:
         ch, _ = await numpad.get_with_timestamp()
+        if ch == numpad.ABORT_KEY:
+            raise AbortInteraction()
         if ch == (KEY_CANCEL if version.has_qwerty else "x"): return
         if not ch: continue
 
@@ -732,6 +737,8 @@ async def collect_coin_entropy():
 
     while True:
         ch, _ = await numpad.get_with_timestamp()
+        if ch == numpad.ABORT_KEY:
+            raise AbortInteraction()
         if ch == (KEY_CANCEL if version.has_qwerty else "x"): return
         if not ch: continue
 
