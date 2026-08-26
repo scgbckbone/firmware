@@ -4256,6 +4256,20 @@ def test_psbt_mutation_before_signing(dev, fake_txn, start_sign, cap_story,
     assert 'Transaction modified' in story
     press_cancel()
 
+def test_virtdisk_import_clears_lease_and_bumps_counter(dev):
+    # the C VirtDisk importer memcpy's into the TXN staging regions
+    # without going through the PSRAM wrapper, so it must be wrapped to
+    # bump txn_write_count and revoke any lease on those bytes
+    cmd = ("from glob import PSRAM; PSRAM.write(0, bytes(100)); "
+           "import glob; assert glob.ALLOWED_DOWNLOAD is not None; "
+           "c0 = PSRAM.txn_write_count; "
+           "from vdisk import VirtDisk; "
+           "VirtDisk.import_file(None, 'x.psbt', 100); "
+           "assert PSRAM.txn_write_count != c0; "
+           "assert glob.ALLOWED_DOWNLOAD is None; "
+           "print('ok')")
+    assert dev.send_recv(CCProtocolPacker.eval(cmd), timeout=None) == 'ok'
+
 def test_inactive_psram_region_write_before_signing(fake_txn, start_sign, end_sign,
                                                      cap_story, sim_exec):
     # A write to the inactive staging half must trigger a re-hash without
