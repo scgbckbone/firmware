@@ -186,10 +186,11 @@ def tx_start(press_select, need_keypress, press_cancel, goto_home, pick_menu_ite
 
     return doit
 
-def test_rx_reuse(rx_start):
+def test_rx_reuse(rx_start, settings_get):
     # check rx pubkey re-use logic
     code, enc_pubkey = rx_start(allow_reuse=True, reset_pubkey=True)
     assert code.isdigit()
+    assert settings_get('ktrx')
     code2, enc_pubkey2 = rx_start(allow_reuse=True, reset_pubkey=False)
     assert code2 == code
     assert enc_pubkey2 == enc_pubkey
@@ -197,8 +198,17 @@ def test_rx_reuse(rx_start):
     code3, pk3 = rx_start(allow_reuse=True, reset_pubkey=True)
     assert code3 != code
 
+def test_rx_seedless_ram_only(rx_start, settings_get, unit_test):
+    unit_test('devtest/clear_seed.py')
+
+    code, enc_pubkey = rx_start(allow_reuse=True, reset_pubkey=True)
+    assert settings_get('ktrx') is None
+
+    code2, enc_pubkey2 = rx_start(allow_reuse=True, reset_pubkey=False)
+    assert (code2, enc_pubkey2) == (code, enc_pubkey)
+
 def test_tx_quick_note(rx_start, tx_start, cap_menu, enter_complex, pick_menu_item, grab_payload,
-                       rx_complete, cap_story, press_cancel, press_select):
+                       rx_complete, cap_story, press_cancel, press_select, settings_get):
     # Send a quick-note
     code, rx_pubkey = rx_start()
     pw = tx_start(rx_pubkey, code)
@@ -220,6 +230,7 @@ def test_tx_quick_note(rx_start, tx_start, cap_menu, enter_complex, pick_menu_it
     
     # now, send that back
     rx_complete(data, pw)
+    assert settings_get('ktrx') is None
 
     # should arrive in notes menu
     m = cap_menu()

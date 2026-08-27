@@ -27,6 +27,21 @@ KT_DOMAIN = 'keyteleport.com'
 # - but the website is ready to make animated BBQr nicely
 NFC_SIZE_LIMIT = const(4096)
 
+# Seedless receivers keep their private key in RAM only.
+rx_privkey = None
+
+def clear_rx_key():
+    global rx_privkey
+
+    blank_object(rx_privkey)
+    rx_privkey = None
+
+    saved = settings.get("ktrx")
+    if saved:
+        settings.remove_key("ktrx")
+        settings.save()
+        blank_object(saved)
+
 def short_bbqr(type_code, data):
     # Short-circuit basic BBQr encoding here: always Base32, single part: 1 of 1
     # - used only for NFC link, where website may split again into parts
@@ -51,8 +66,20 @@ async def nfc_push_kt(qrdata):
 
 async def kt_start_rx(*a):
     # menu item to "start a receive" operation
+    global rx_privkey
 
-    rx_key = settings.get("ktrx")
+    from pincodes import pa
+
+    have_secret = pa.has_secrets()
+    saved = settings.get("ktrx")
+    if saved and not have_secret:
+        # Older versions stored seedless RX keys under the fixed settings key.
+        settings.remove_key("ktrx")
+        settings.save()
+        blank_object(saved)
+        saved = None
+
+    rx_key = saved if have_secret else rx_privkey
 
     if rx_key:
         # Maybe re-use same one? Vaguely risky? Concern is they are confused and
@@ -69,17 +96,32 @@ We will re-use same values as last try, unless you press (R) for new values to b
             return
         elif ch == 'r':
             # wipe and restart; sender's work might be lost
+            clear_rx_key()
             rx_key = None
         else:
             # keep old keypair -- they might be confused
-            kp = ngu.secp256k1.keypair(a2b_hex(rx_key))
+            if have_secret:
+                tmp = a2b_hex(rx_key)
+                try:
+                    kp = ngu.secp256k1.keypair(tmp)
+                finally:
+                    blank_object(tmp)
+            else:
+                kp = ngu.secp256k1.keypair(rx_key)
 
     if not rx_key:
         # pick a random key pair, just for this session
         kp = ngu.secp256k1.keypair()
 
-        settings.set("ktrx", b2a_hex(kp.privkey()))
-        settings.save()
+        tmp = kp.privkey()
+        try:
+            if have_secret:
+                settings.set("ktrx", b2a_hex(tmp))
+                settings.save()
+            else:
+                rx_privkey = bytearray(tmp)
+        finally:
+            blank_object(tmp)
 
     short_code, payload = generate_rx_code(kp)
 
@@ -101,16 +143,25 @@ def generate_rx_code(kp):
     #assert len(pubkey) == 33
 
     # - want the code to be deterministic, but I also don't want to save it
-    nk = ngu.hash.sha256d(kp.privkey() + b'COLCARD4EVER')
+    privkey = kp.privkey()
+    nk = kk = cipher = None
+    try:
+        nk = ngu.hash.sha256d(privkey + b'COLCARD4EVER')
 
-    # first byte will be 0x02 or 0x03 (Y coord) -- remove those known 7 bits
-    pubkey[0] ^= nk[20] & 0xfe
+        # first byte will be 0x02 or 0x03 (Y coord) -- remove those known 7 bits
+        pubkey[0] ^= nk[20] & 0xfe
 
-    num = '%08d' % (int.from_bytes(nk[4:8], 'big') % 1_0000_0000)
+        num = '%08d' % (int.from_bytes(nk[4:8], 'big') % 1_0000_0000)
 
-    # encryption after baby key stretch
-    kk = ngu.hash.sha256s(num.encode())
-    enc = aes256ctr.new(kk).cipher(pubkey)
+        # encryption after baby key stretch
+        kk = ngu.hash.sha256s(num.encode())
+        cipher = aes256ctr.new(kk)
+        enc = cipher.cipher(pubkey)
+    finally:
+        if cipher: cipher.blank()
+        blank_object(privkey)
+        blank_object(nk)
+        blank_object(kk)
 
     return num, enc
 
@@ -233,11 +284,19 @@ def pick_noid_key():
 
 async def kt_decode_rx(is_psbt, payload):
     # we are getting data back from a sender, decode it.
+    cleanup = []
+    try:
+        return await _kt_decode_rx(is_psbt, payload, cleanup)
+    finally:
+        for item in reversed(cleanup):
+            blank_object(item)
 
+async def _kt_decode_rx(is_psbt, payload, cleanup):
     prompt = 'Teleport Password (text)'
 
     if not is_psbt:
-        rx_key = settings.get("ktrx")
+        from pincodes import pa
+        rx_key = settings.get("ktrx") if pa.has_secrets() else rx_privkey
         if not rx_key:
             await ux_show_story("Not expecting any teleports. You need to start over.")
 
@@ -246,7 +305,14 @@ async def kt_decode_rx(is_psbt, payload):
 
         his_pubkey = payload[0:33]
         body = payload[33:]
-        pair = ngu.secp256k1.keypair(a2b_hex(rx_key))
+        if rx_key is rx_privkey:
+            pair = ngu.secp256k1.keypair(rx_key)
+        else:
+            tmp = a2b_hex(rx_key)
+            try:
+                pair = ngu.secp256k1.keypair(tmp)
+            finally:
+                blank_object(tmp)
 
         ses_key, body = decode_step1(pair, his_pubkey, body)
     else:
@@ -259,6 +325,8 @@ async def kt_decode_rx(is_psbt, payload):
 
         if sender_xfp is not None:
             prompt = 'Teleport Password from [%s]' % xfp2str(sender_xfp)
+
+    cleanup.extend((ses_key, body))
 
     if not ses_key:
         # when ECDH fails, it's truncation or wrong RX key (due to sender using old rx key,
@@ -280,8 +348,10 @@ async def kt_decode_rx(is_psbt, payload):
         try:
             assert len(pw) == 8
             noid_key = b32decode(pw)       # case insenstive, and smart about confused chars
+            cleanup.append(noid_key)
             final = decode_step2(ses_key, noid_key, body)
-            if final is not None: 
+            if final is not None:
+                cleanup.append(final)
                 break
         except: pass
 
@@ -292,10 +362,12 @@ async def kt_decode_rx(is_psbt, payload):
 
     # success w/ decoding. but maybe something goes wrong or they reject a confirm step
     # so keep the rx key alive still
+    raw = final[1:]
+    cleanup.append(raw)
 
-    await kt_accept_values(chr(final[0]), final[1:])
+    await kt_accept_values(chr(final[0]), raw, clear_rx=not is_psbt)
 
-async def kt_accept_values(dtype, raw):
+async def kt_accept_values(dtype, raw, clear_rx=False):
     # We got some secret, decode it more, and save it.
     '''
     - `s` - secret, encoded per stash.py
@@ -341,6 +413,9 @@ async def kt_accept_values(dtype, raw):
         with SFFile(TXN_INPUT_OFFSET, max_size=psbt_len) as out:
             out.write(raw)
 
+        if clear_rx:
+            clear_rx_key()
+
         # This will take over UX w/ the signing process
         # flags=None --> whether to finalize is decided based on psbt.is_complete
         sign_transaction(psbt_len, flags=None, input_method="kt")
@@ -360,11 +435,11 @@ async def kt_accept_values(dtype, raw):
 
         from flow import has_secrets
 
+        clear_rx_key()
         if has_secrets():
             # restores as tmp secret and/or offers to save to SeedVault
             # need to remove key before I get into tmp seed settings
             # so even if this errors out, new ktrx is needed
-            settings.remove_key("ktrx")
             prob = await restore_tmp_from_dict_ll(vals, raw_sec)
         else:
             # we have no secret, so... reboot if it works, else errors shown, etc.
@@ -372,10 +447,6 @@ async def kt_accept_values(dtype, raw):
 
         if prob:
             await ux_show_story(prob, title='FAILED')
-        else:
-            # force new rx key because this tfr worked
-            # only has effect if in master seed settings
-            settings.remove_key("ktrx")         
         return
 
     elif dtype in 'nv':
@@ -394,7 +465,7 @@ async def kt_accept_values(dtype, raw):
             # import secure note(s)
             from notes import import_from_json, make_notes_menu, NoteContent
 
-            settings.remove_key("ktrx")     # force new rx key after this point
+            clear_rx_key()              # force new rx key after this point
             await import_from_json(dict(coldcard_notes=js))
             
             await ux_dramatic_pause('Imported.', 2)
@@ -411,24 +482,34 @@ async def kt_accept_values(dtype, raw):
         raise ValueError(dtype)
 
     # key material is arriving; offer to use as main secret, or tmp, or seed vault?
-    settings.remove_key("ktrx")     # force new rx key after this point
+    clear_rx_key()              # force new rx key after this point
     assert enc
 
     from seed import set_ephemeral_seed, set_seed_value
 
-    if not has_se_secrets():
-        # unit has nothing, so this will be the master seed
-        set_seed_value(encoded=enc)
-        ok = True
-    else:
-        ok = await set_ephemeral_seed(enc, origin=origin, label=label)
+    try:
+        if not has_se_secrets():
+            # unit has nothing, so this will be the master seed
+            set_seed_value(encoded=enc)
+            ok = True
+        else:
+            ok = await set_ephemeral_seed(enc, origin=origin, label=label)
+    finally:
+        blank_object(enc)
 
     if ok:
         goto_top_menu()
 
 def noid_stretch(session_key, noid_key):
     # TODO: measure timing of this on real Q
-    return ngu.hash.pbkdf2_sha512(session_key, noid_key, 5000)[0:32]
+    stretched = ngu.hash.pbkdf2_sha512(session_key, noid_key, 5000)
+    half = None
+    try:
+        half = stretched[0:32]
+        return bytearray(half)
+    finally:
+        blank_object(half)
+        blank_object(stretched)
 
 def encode_payload(my_keypair, his_pubkey, noid_key, body, for_psbt=False):
     # do all the encryption for sender
@@ -457,17 +538,23 @@ def encode_payload(my_keypair, his_pubkey, noid_key, body, for_psbt=False):
 
 def decode_step1(my_keypair, his_pubkey, body):
     # Do ECDH and remove top layer of encryption
+    session_key = rv = cipher = None
     try:
         assert len(body) >= 3
 
         session_key = my_keypair.ecdh_multiply(his_pubkey)
 
-        rv = aes256ctr.new(session_key).cipher(body[:-2])
+        cipher = aes256ctr.new(session_key)
+        rv = cipher.cipher(body[:-2])
         chk = ngu.hash.sha256s(rv)[-2:]
 
         assert chk == body[-2:]         # likely means wrong rx key, or truncation
     except:
+        blank_object(session_key)
+        blank_object(rv)
         return None, None
+    finally:
+        if cipher: cipher.blank()
 
     return session_key, rv
 
@@ -476,11 +563,20 @@ def decode_step2(session_key, noid_key, body):
     assert len(noid_key) == 5
 
     pk = noid_stretch(session_key, noid_key)
+    cipher = None
+    try:
+        cipher = aes256ctr.new(pk)
+        msg = cipher.cipher(body[:-2])
+        chk = ngu.hash.sha256s(msg)[-2:]
 
-    msg = aes256ctr.new(pk).cipher(body[:-2])
-    chk = ngu.hash.sha256s(msg)[-2:]
+        if chk == body[-2:]:
+            return msg
 
-    return msg if chk == body[-2:] else None
+        blank_object(msg)
+        return None
+    finally:
+        if cipher: cipher.blank()
+        blank_object(pk)
     
 
 async def kt_incoming(type_code, payload):
