@@ -137,8 +137,8 @@ class BasicPSBTInput(PSBTSection):
         self.previous_txid = None        # v2
         self.prevout_idx = None          # v2
         self.sequence = None             # v2
-        self.req_time_locktime = None    # v2
-        self.req_height_locktime = None  # v2
+        self.req_time = None    # v2
+        self.req_height = None  # v2
         self.musig_pubkeys = {}
         self.musig_pubnonces = {}
         self.musig_part_sigs = {}
@@ -167,8 +167,8 @@ class BasicPSBTInput(PSBTSection):
              a.previous_txid == b.previous_txid and \
              a.prevout_idx == b.prevout_idx and \
              a.sequence == b.sequence and \
-             a.req_time_locktime == b.req_time_locktime and \
-             a.req_height_locktime == b.req_height_locktime and \
+             a.req_time == b.req_time and \
+             a.req_height == b.req_height and \
              a.musig_pubkeys == b.musig_pubkeys and \
              a.musig_pubnonces == b.musig_pubnonces and \
              a.musig_part_sigs == b.musig_part_sigs and \
@@ -219,9 +219,9 @@ class BasicPSBTInput(PSBTSection):
         elif kt == PSBT_IN_SEQUENCE:
             self.sequence = struct.unpack("<I", val)[0]
         elif kt == PSBT_IN_REQUIRED_TIME_LOCKTIME:
-            self.req_time_locktime = struct.unpack("<I", val)[0]
+            self.req_time = struct.unpack("<I", val)[0]
         elif kt == PSBT_IN_REQUIRED_HEIGHT_LOCKTIME:
-            self.req_height_locktime = struct.unpack("<I", val)[0]
+            self.req_height = struct.unpack("<I", val)[0]
         elif kt == PSBT_IN_TAP_SCRIPT_SIG:
             assert len(key) == 64, "PSBT_IN_TAP_SCRIPT_SIG key length != 64"
             assert len(val) in (64, 65), "PSBT_IN_TAP_SCRIPT_SIG signature length != 64 or 65"
@@ -311,10 +311,10 @@ class BasicPSBTInput(PSBTSection):
                 wr(PSBT_IN_OUTPUT_INDEX, struct.pack("<I", self.prevout_idx))
             if self.sequence is not None:
                 wr(PSBT_IN_SEQUENCE, struct.pack("<I", self.sequence))
-            if self.req_time_locktime is not None:
-                wr(PSBT_IN_REQUIRED_TIME_LOCKTIME, struct.pack("<I", self.req_time_locktime))
-            if self.req_height_locktime is not None:
-                wr(PSBT_IN_REQUIRED_HEIGHT_LOCKTIME, struct.pack("<I", self.req_height_locktime))
+            if self.req_time is not None:
+                wr(PSBT_IN_REQUIRED_TIME_LOCKTIME, struct.pack("<I", self.req_time))
+            if self.req_height is not None:
+                wr(PSBT_IN_REQUIRED_HEIGHT_LOCKTIME, struct.pack("<I", self.req_height))
 
         if self.musig_pubkeys:
             for agg_k, pk_lst in self.musig_pubkeys.items():
@@ -706,8 +706,8 @@ class BasicPSBT:
                 inp.prevout_idx = None
                 inp.previous_txid = None
                 inp.sequence = None
-                inp.req_time_locktime = None
-                inp.req_height_locktime = None
+                inp.req_time = None
+                inp.req_height = None
 
             tx_outs = []
             for out in self.outputs:

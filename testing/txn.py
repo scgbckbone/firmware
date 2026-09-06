@@ -193,8 +193,8 @@ def fake_txn(dev, pytestconfig):
                     psbt.inputs[i].previous_txid = supply.hash
                     psbt.inputs[i].prevout_idx = 0
                     psbt.inputs[i].sequence = seq
-                    # psbt.inputs[i].req_time_locktime = None
-                    # psbt.inputs[i].req_height_locktime = None
+                    # psbt.inputs[i].req_time = None
+                    # psbt.inputs[i].req_height = None
             else:
                 assert i != 0, 'cant dup first input'
                 txn.vin.append(txn.vin[-1])
