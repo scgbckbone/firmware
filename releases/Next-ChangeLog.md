@@ -10,7 +10,7 @@ your addition and anything else already in this file.**
 - Bugfix: Fix device crash when message-signing input is valid JSON but not an
   object (NFC / QR / SD `.json` file). Thanks to [@Amiga500](https://github.com/Amiga500).
 
-- tbd
+- Enhancement: Support per-input required height and time locktimes in PSBTv2 transactions.
 
 
 # Mk Specific Changes
@@ -25,5 +25,4 @@ your addition and anything else already in this file.**
 ## 1.5.3Q - 2026-09-xx
 
 - tbd
-
 
