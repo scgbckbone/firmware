@@ -3147,6 +3147,151 @@ def test_far_future_locktime_warning(
     end_sign(accept=False)
 
 
+@pytest.mark.parametrize("is_multi", [False, True])
+@pytest.mark.parametrize("lock_field, lock_value", [
+    ("req_height", 800000),
+    ("req_time", 1513209600),
+])
+def test_psbt_v2_required_locktime_fields_sign(is_multi, lock_field, lock_value,
+                                               fake_txn, fake_ms_txn, import_ms_wallet,
+                                               clear_miniscript, start_sign, end_sign,
+                                               cap_story):
+    def add_required_locktime(psbt):
+        psbt.inputs[0].sequence = 0xfffffffd
+        setattr(psbt.inputs[0], lock_field, lock_value)
+
+    if not is_multi:
+        psbt = fake_txn(1, 1, addr_fmt="p2wpkh", psbt_v2=True,
+                        psbt_hacker=add_required_locktime)
+    else:
+        clear_miniscript()
+        M = 2
+        N = 3
+        keys = import_ms_wallet(M, N, accept=True)
+        psbt = fake_ms_txn(1, 1, M, keys, psbt_v2=True,
+                           hack_psbt=add_required_locktime)
+
+    start_sign(psbt, finalize=not is_multi)
+    title, story = cap_story()
+    assert title == "OK TO SEND?"
+    assert "TX LOCKTIMES" in story
+    assert "Abs Locktime" in story
+
+    signed = end_sign(accept=True, finalize=not is_multi)
+    if not is_multi:
+        tx = CTransaction()
+        tx.deserialize(BytesIO(signed))
+        assert tx.nLockTime == lock_value
+        assert tx.vin[0].nSequence == 0xfffffffd
+
+
+def test_psbt_v2_required_locktime_taproot(fake_txn, start_sign, end_sign):
+    required = 800000
+
+    def hack(psbt):
+        psbt.inputs[0].sequence = 0xfffffffd
+        psbt.inputs[0].req_height = required
+
+    psbt = fake_txn(1, 1, addr_fmt="p2tr", psbt_v2=True, psbt_hacker=hack)
+    start_sign(psbt, finalize=True)
+    signed = end_sign(accept=True, finalize=True)
+    tx = CTransaction()
+    tx.deserialize(BytesIO(signed))
+    assert tx.nLockTime == required
+
+
+@pytest.mark.parametrize("lock_field, values", [
+    ("req_height", [700000, 800000, 750000]),
+    ("req_time", [1600000000, 1700000000, 1650000000]),
+])
+def test_psbt_v2_required_locktime_max(lock_field, values, fake_txn, start_sign,
+                                       end_sign):
+    def hack(psbt):
+        for i, value in enumerate(values):
+            psbt.inputs[i].sequence = 0xfffffffd
+            setattr(psbt.inputs[i], lock_field, value)
+
+        # The final input intentionally has no required locktime.
+
+    psbt = fake_txn(len(values) + 1, 1, addr_fmt="p2wpkh", psbt_v2=True,
+                    psbt_hacker=hack)
+    start_sign(psbt, finalize=True)
+    signed = end_sign(accept=True, finalize=True)
+    tx = CTransaction()
+    tx.deserialize(BytesIO(signed))
+    assert tx.nLockTime == max(values)
+
+
+def test_psbt_v2_required_locktime_both_prefers_height(fake_txn, start_sign,
+                                                       end_sign):
+    heights = [810000, 830000]
+    times = [1700000000, 1690000000]
+
+    def hack(psbt):
+        for i in range(len(heights)):
+            psbt.inputs[i].sequence = 0xfffffffd
+            psbt.inputs[i].req_height = heights[i]
+            psbt.inputs[i].req_time = times[i]
+
+    psbt = fake_txn(len(heights), 1, addr_fmt="p2wpkh", psbt_v2=True,
+                    psbt_hacker=hack)
+    start_sign(psbt, finalize=True)
+    signed = end_sign(accept=True, finalize=True)
+    tx = CTransaction()
+    tx.deserialize(BytesIO(signed))
+    assert tx.nLockTime == max(heights)
+
+
+def test_psbt_v2_required_locktime_incompatible(fake_txn, start_sign, cap_story,
+                                                press_cancel):
+    def hack(psbt):
+        psbt.inputs[0].sequence = 0xfffffffd
+        psbt.inputs[0].req_height = 800000
+        psbt.inputs[1].sequence = 0xfffffffd
+        psbt.inputs[1].req_time = 1700000000
+
+    psbt = fake_txn(2, 1, addr_fmt="p2wpkh", psbt_v2=True, psbt_hacker=hack)
+    start_sign(psbt, finalize=True)
+    time.sleep(.1)
+    title, story = cap_story()
+    assert title == "Failure"
+    assert "incompatible locktime requirements" in story
+    press_cancel()
+
+
+def test_psbt_v2_fallback_locktime(fake_txn, start_sign, end_sign):
+    fallback = 750000
+
+    def hack(psbt):
+        psbt.inputs[0].sequence = 0xfffffffd
+        psbt.fallback_locktime = fallback
+
+    psbt = fake_txn(1, 1, addr_fmt="p2wpkh", psbt_v2=True, psbt_hacker=hack)
+    start_sign(psbt, finalize=True)
+    signed = end_sign(accept=True, finalize=True)
+    tx = CTransaction()
+    tx.deserialize(BytesIO(signed))
+    assert tx.nLockTime == fallback
+
+
+def test_psbt_v2_required_locktime_overrides_fallback(fake_txn, start_sign,
+                                                      end_sign):
+    fallback = 750000
+    required = 800000
+
+    def hack(psbt):
+        psbt.inputs[0].sequence = 0xfffffffd
+        psbt.inputs[0].req_height = required
+        psbt.fallback_locktime = fallback
+
+    psbt = fake_txn(1, 1, addr_fmt="p2wpkh", psbt_v2=True, psbt_hacker=hack)
+    start_sign(psbt, finalize=True)
+    signed = end_sign(accept=True, finalize=True)
+    tx = CTransaction()
+    tx.deserialize(BytesIO(signed))
+    assert tx.nLockTime == required
+
+
 def test_relative_locktime_summary_is_bounded(fake_txn, start_sign, cap_story, press_cancel):
     num_each = 125
     max_lock = num_each

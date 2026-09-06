@@ -700,7 +700,7 @@ class psbtInputProxy(psbtProxy):
         'unknown', 'witness_utxo', 'sighash', 'redeem_script', 'witness_script', 'sp_idxs',
         'fully_signed', 'af', 'is_miniscript', "subpaths", 'utxo', 'utxo_spk',
         'amount', 'previous_txid', 'part_sigs', 'added_sigs',  'prevout_idx', 'sequence',
-        'req_time_locktime', 'req_height_locktime',
+        'req_time', 'req_height',
         'taproot_merkle_root', 'taproot_script_sigs', 'taproot_scripts',
         'taproot_subpaths', 'taproot_internal_key', 'taproot_key_sig', 'tr_added_sigs',
         'ik_idx', 'musig_pubkeys', 'musig_pubnonces', 'musig_part_sigs', 'musig_agg_idx',
@@ -744,8 +744,8 @@ class psbtInputProxy(psbtProxy):
         #self.previous_txid = None
         #self.prevout_idx = None
         #self.sequence = None
-        #self.req_time_locktime = None
-        #self.req_height_locktime = None
+        #self.req_time = None
+        #self.req_height = None
 
         # === musig ===
         #self.musig_pubkeys = None
@@ -1266,9 +1266,9 @@ class psbtInputProxy(psbtProxy):
         elif kt == PSBT_IN_SEQUENCE:
             self.sequence = unpack("<I", self.get(val))[0]
         elif kt == PSBT_IN_REQUIRED_TIME_LOCKTIME:
-            self.req_time_locktime = unpack("<I", self.get(val))[0]
+            self.req_time = unpack("<I", self.get(val))[0]
         elif kt == PSBT_IN_REQUIRED_HEIGHT_LOCKTIME:
-            self.req_height_locktime = unpack("<I", self.get(val))[0]
+            self.req_height = unpack("<I", self.get(val))[0]
         elif kt == PSBT_IN_MUSIG2_PARTICIPANT_PUBKEYS:
             self.musig_pubkeys = self.musig_pubkeys or []
             self.musig_pubkeys.append((key, val))
@@ -1369,11 +1369,11 @@ class psbtInputProxy(psbtProxy):
             if self.sequence is not None:
                 wr(PSBT_IN_SEQUENCE, pack("<I", self.sequence))
 
-            if self.req_time_locktime is not None:
-                wr(PSBT_IN_REQUIRED_TIME_LOCKTIME, pack("<I", self.req_time_locktime))
+            if self.req_time is not None:
+                wr(PSBT_IN_REQUIRED_TIME_LOCKTIME, pack("<I", self.req_time))
 
-            if self.req_height_locktime is not None:
-                wr(PSBT_IN_REQUIRED_HEIGHT_LOCKTIME, pack("<I", self.req_height_locktime))
+            if self.req_height is not None:
+                wr(PSBT_IN_REQUIRED_HEIGHT_LOCKTIME, pack("<I", self.req_height))
 
         if self.unknown:
             for k, v in self.unknown:
@@ -1843,6 +1843,12 @@ class psbtObject(psbtProxy):
 
         self.validate_unkonwn(self, "global namespace")
 
+        # BIP-370 tx-level locktime, derived from per-input required locktimes
+        lt_required = False
+        height_possible = True
+        time_possible = True
+        max_height = 0
+        max_time = 0
         inp_have_subpath = False
         for i in self.inputs:
             if i.subpaths or i.taproot_subpaths:
@@ -1852,17 +1858,28 @@ class psbtObject(psbtProxy):
                 # v2 requires inclusion
                 assert i.prevout_idx is not None
                 assert i.previous_txid
-                if i.req_time_locktime is not None:
-                    assert i.req_time_locktime >= NLOCK_IS_TIME
-                if i.req_height_locktime is not None:
-                    assert 0 < i.req_height_locktime < NLOCK_IS_TIME
+                if i.req_time is not None:
+                    assert i.req_time >= NLOCK_IS_TIME
+                if i.req_height is not None:
+                    assert 0 < i.req_height < NLOCK_IS_TIME
+
+                if i.req_time is not None or i.req_height is not None:
+                    lt_required = True
+                    if i.req_height is None:
+                        height_possible = False
+                    elif i.req_height > max_height:
+                        max_height = i.req_height
+                    if i.req_time is None:
+                        time_possible = False
+                    elif i.req_time > max_time:
+                        max_time = i.req_time
             else:
                 # v0 requires exclusion
                 assert i.prevout_idx is None
                 assert i.previous_txid is None
                 assert i.sequence is None
-                assert i.req_time_locktime is None
-                assert i.req_height_locktime is None
+                assert i.req_time is None
+                assert i.req_height is None
 
             if i.witness_script:
                 assert i.witness_script[1] >= 30
@@ -1915,6 +1932,13 @@ class psbtObject(psbtProxy):
 
 
             self.validate_unkonwn(i, "input")
+
+        if lt_required:
+            assert height_possible or time_possible, "incompatible locktime requirements"
+            # v2 only: _lock_time normally comes from the unsigned tx (v0);
+            # here it is computed from per-input required locktimes and so
+            # always wins over the global fallback locktime (BIP-370)
+            self._lock_time = max_height if height_possible else max_time
 
         null_data_op_return = False
         for o in self.outputs:

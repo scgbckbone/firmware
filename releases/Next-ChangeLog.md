@@ -4,6 +4,8 @@ This lists the new changes that have not yet been published in a normal release.
 
 # Shared Improvements - Both Mk and Q
 
+- Enhancement: Support per-input required height and time locktimes in PSBTv2 transactions.
+
 - New Feature: Added USB ncry v3 authenticated encryption with direction-separated keys and replay protection
 - Enhancement: Warn when a transaction's block-height `nLockTime` is more than
   ten years beyond the Bitcoin block height known to the firmware.

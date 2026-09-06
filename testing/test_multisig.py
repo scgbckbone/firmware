@@ -1125,8 +1125,8 @@ def fake_ms_txn(pytestconfig):
                 psbt.inputs[i].previous_txid = supply.hash
                 psbt.inputs[i].prevout_idx = 0
                 psbt.inputs[i].sequence = seq
-                # psbt.inputs[i].req_time_locktime = None
-                # psbt.inputs[i].req_height_locktime = None
+                # psbt.inputs[i].req_time = None
+                # psbt.inputs[i].req_height = None
 
             spendable = CTxIn(COutPoint(supply.sha256, 0), nSequence=seq)
             txn.vin.append(spendable)
