@@ -534,11 +534,6 @@ async def pick_new_codex32(menu, label, item):
     byte_length, ephemeral = item.arg
     return await seed.make_new_codex32_wallet(byte_length, ephemeral)
 
-async def new_codex32_from_dice(menu, label, item):
-    import seed
-    byte_length, ephemeral = item.arg
-    return await seed.new_codex32_from_dice(byte_length, ephemeral)
-
 async def any_active_duress_ux():
     from trick_pins import tp
     tp.reload()
@@ -1502,11 +1497,10 @@ async def import_codex32_as_secret(value, ephemeral, origin=None):
         return
 
     if not share.is_secret_share():
-        if not await ux_confirm(
-                "This is share '%s', not the recovered secret share 's'. "
-                "Loading it creates the wallet derived from this individual share."
-                % share.index, title='Share Wallet'):
-            return
+        await ux_show_story(
+            "Share '%s' is not a wallet secret. Use Shamir Recover with enough "
+            "shares to recover share 's'." % share.index, title='Not a Secret')
+        return
 
     try:
         encoded = seed.codex32_to_encoded_secret(share)
@@ -2728,6 +2722,10 @@ async def codex32_shamir_split(*a):
     with stash.SensitiveValues(enforce_delta=True) as sv:
         current = sv.codex32_share()
         if current:
+            if not current.is_secret_share():
+                await ux_show_story("Only Codex32 secret share 's' can be split.",
+                                    title='Not a Secret')
+                return
             secret_share = Share(current.hrp, uid, current.payload, SECRET, threshold)
         else:
             if sv.mode == 'master' and len(sv.raw) in (16, 32, 64):

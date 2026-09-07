@@ -6,7 +6,7 @@ import pytest
 CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
 
 SHARES = [
-    'MS12NAMEA320ZYXWVUTSRQPNMLKJHGFEDCAXRPP870HKKQRM',
+    'ms10testsxxxxxxxxxxxxxxxxxxxxxxxxxx4nzvca9cmczlw',
     'ms10leetsllhdmn9m42vcsamx24zrxgs3qrl7ahwvhw4fnzrhve25gvezzyq'
     '9dsuypw2ragmel',
     'ms10testsqqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0j'

@@ -1,6 +1,6 @@
 # (c) Copyright 2026 by Coinkite Inc. This file is covered by license found in COPYING-CC.
 
-from codex32 import SECRET, Share, generate_share
+from codex32 import SECRET, Share, generate_share, pack_u5
 from stash import SecretStash
 from ubinascii import hexlify as b2a_hex
 from utils import deserialize_secret
@@ -27,8 +27,8 @@ long_cc = Share.parse(
     'NQHVLX3')
 
 # The complete data section, including otherwise-lost trailing bits, survives
-# the 72-byte secret format for secret and non-secret shares.
-for original in (s, sa, long_ms, long_cc):
+# the 72-byte secret format.
+for original in (s, long_ms, long_cc):
     encoded = SecretStash.encode(codex32=original)
     assert len(encoded) == 72
     assert SecretStash.is_codex32(encoded)
@@ -41,6 +41,24 @@ for original in (s, sa, long_ms, long_cc):
     assert raw == original.to_seed()
     assert mode == ('xprv' if original.hrp == 'cc' else 'master')
     node.blank()
+
+try:
+    SecretStash.encode(codex32=sa)
+except AssertionError as exc:
+    assert 'not a wallet secret' in str(exc)
+else:
+    raise AssertionError('non-secret share encoded as wallet')
+
+encoded_share = bytearray(72)
+encoded_share[0] = 2
+packed = pack_u5(sa.data_values())
+encoded_share[2:2+len(packed)] = packed
+try:
+    SecretStash.decode(encoded_share)
+except AssertionError as exc:
+    assert 'not a wallet secret' in str(exc)
+else:
+    raise AssertionError('non-secret share decoded as wallet')
 
 # Demonstrate why retaining only seed bytes is insufficient for arbitrary
 # interpolated Codex32 shares.

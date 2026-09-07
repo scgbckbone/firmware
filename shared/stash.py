@@ -17,12 +17,6 @@ from utils import swab32, call_later_ms, B2A, node_from_privkey
 
 SEED_LEN_OPTS = [12, 18, 24]
 
-# Native Codex32 secret. The remaining byte stores format flags followed by
-# the complete Codex32 data section (threshold, id, index and payload) packed
-# as 5-bit values. The checksum is reproducible and is not stored.
-CODEX32_MARKER = const(0x02)
-
-
 class ZeroSecretException(ValueError):
     # raised when there is no secret or secret is zero
     pass
@@ -72,6 +66,7 @@ class SecretStash:
         if codex32 is not None:
             from codex32 import CC_HRP, pack_u5
 
+            assert codex32.is_secret_share(), 'Codex32 share is not a wallet secret'
             size_code = {26: 0, 52: 1, 103: 2}[len(codex32.payload)]
             if codex32.hrp == CC_HRP:
                 assert size_code == 2
@@ -79,7 +74,7 @@ class SecretStash:
 
             packed = pack_u5(codex32.data_values())
             assert len(packed) <= 69
-            nv[0] = CODEX32_MARKER
+            nv[0] = 2
             nv[1] = size_code
             nv[2:2+len(packed)] = packed
 
@@ -118,11 +113,12 @@ class SecretStash:
 
         hd = ngu.hdnode.HDNode()
 
-        if marker == CODEX32_MARKER:
+        if marker == 2:
             from codex32 import CC_HRP
 
             assert not _bip39pw
             share = SecretStash.decode_codex32(secret)
+            assert share.is_secret_share(), 'Codex32 share is not a wallet secret'
             seed = share.to_seed()
             if share.hrp == CC_HRP:
                 assert len(seed) == 64
@@ -189,7 +185,7 @@ class SecretStash:
 
     @staticmethod
     def is_codex32(secret):
-        return bool(secret) and secret[0] == CODEX32_MARKER
+        return bool(secret) and secret[0] == 2
 
     @staticmethod
     def decode_words(secret, bin_mode=False):
@@ -211,7 +207,7 @@ class SecretStash:
     def decode_codex32(secret):
         from codex32 import MS_HRP, CC_HRP, Share, unpack_u5
 
-        assert secret[0] == CODEX32_MARKER
+        assert secret[0] == 2
         flags = secret[1]
         assert not (flags & ~0x07), 'unknown Codex32 format'
 
@@ -242,7 +238,7 @@ class SecretStash:
             # xprv => BIP-32 private key values
             return 'xprv'
 
-        if marker == CODEX32_MARKER:
+        if marker == 2:
             return 'Codex32'
 
         if marker & 0x80:

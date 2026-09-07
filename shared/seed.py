@@ -671,9 +671,9 @@ async def show_codex32(c32, ephemeral=False, is_new=True):
     escape = ''
 
     if is_new:
-        escape += '04'
+        escape += '0'
         msg += '\n\nID: %s' % c32[4:8]
-        msg += '\n\nPress (0) to change ID or (4) to mix in dice rolls.'
+        msg += '\n\nPress (0) to change ID.'
         if ephemeral:
             escape += '6'
             msg += ' Press (6) to skip the verification.'
@@ -718,13 +718,6 @@ async def approve_codex32(seed, ephemeral=False):
                 await ux_show_story('ID must be four Codex32 characters.', title='FAILED')
             continue
 
-        if ch == '4':
-            nwords = 12 if len(seed) == 16 else 24
-            count, mixed = await add_dice_rolls(0, seed, False, nwords=nwords)
-            if count:
-                seed = mixed[:len(seed)]
-            continue
-
         if ch == '6' and ephemeral:
             if await ux_confirm('Skip verification of the recorded Codex32 share?'):
                 return share
@@ -738,10 +731,12 @@ async def approve_codex32(seed, ephemeral=False):
         elif await ux_confirm('Throw away this secret and stop?'):
             return
 
-async def make_new_codex32_wallet(byte_length, ephemeral=False, seed=None):
+async def make_new_codex32_wallet(byte_length, ephemeral=False):
+    purpose = PURPOSE_EPHEMERAL if ephemeral else PURPOSE_MASTER
+    seed = await generate_seed_with_user_entropy(purpose)
     if seed is None:
-        await ux_dramatic_pause('Generating...', 3)
-        seed = generate_seed()[:byte_length]
+        return
+    seed = seed[:byte_length]
 
     share = await approve_codex32(seed, ephemeral)
     if not share:
@@ -753,16 +748,6 @@ async def make_new_codex32_wallet(byte_length, ephemeral=False, seed=None):
     else:
         set_seed_value(encoded=encoded)
     goto_top_menu(first_time=not ephemeral)
-
-async def new_codex32_from_dice(byte_length, ephemeral=False):
-    prompt = '\n\nPress %s to continue, %s to exit.' % (OK, X)
-    if await ux_show_story(DICE_ONLY_WARNING + prompt, title='WARNING') == 'x':
-        return
-
-    nwords = 12 if byte_length == 16 else 24
-    count, seed = await add_dice_rolls(0, b'', True, nwords=nwords, enforce=True)
-    if count:
-        await make_new_codex32_wallet(byte_length, ephemeral, seed[:byte_length])
 
 def update_entropy_screen(title, count, target, unit, action, prompt, mk_title=None):
     # progress display while collecting user entropy
@@ -1598,15 +1583,12 @@ async def make_ephemeral_seed_menu(*a):
     return EphemeralSeedMenu(rv)
 
 async def make_codex32_menu(menu, label, item):
-    from actions import (codex32_shamir_restore, import_codex32,
-                         new_codex32_from_dice, pick_new_codex32)
+    from actions import codex32_shamir_restore, import_codex32, pick_new_codex32
 
     ephemeral = bool(item.arg)
     generated = [
         MenuItem('128-bit', f=pick_new_codex32, arg=(16, ephemeral)),
         MenuItem('256-bit', f=pick_new_codex32, arg=(32, ephemeral)),
-        MenuItem('128-bit Dice', f=new_codex32_from_dice, arg=(16, ephemeral)),
-        MenuItem('256-bit Dice', f=new_codex32_from_dice, arg=(32, ephemeral)),
     ]
     return MenuSystem([
         MenuItem('Generate', menu=generated),
