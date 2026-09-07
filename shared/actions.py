@@ -8,10 +8,12 @@ import ckcc, pyb, version, uasyncio, sys, uos, chains
 from uhashlib import sha256
 from uasyncio import sleep_ms
 from ubinascii import hexlify as b2a_hex
-from utils import imported, problem_file_line, get_filesize, encode_seed_qr
+from utils import imported, problem_file_line, get_filesize, encode_seed_qr, chunk_address
 from utils import xfp2str, B2A, txid_from_fname, wipe_if_deltamode
 from ux import ux_show_story, the_ux, ux_confirm, ux_dramatic_pause, ux_aborted
-from ux import ux_enter_bip32_index, ux_input_text, import_export_prompt, OK, X, ux_render_words
+from ux import (ux_enter_bip32_index, ux_enter_codex32, ux_enter_number,
+                ux_input_text, import_export_prompt, show_qr_code, OK, X,
+                ux_render_words)
 from export import export_contents, make_summary_file, make_descriptor_wallet_export
 from export import make_bitcoin_core_wallet, generate_wasabi_wallet, generate_generic_export
 from export import generate_unchained_export, generate_electrum_wallet, make_key_expression_export
@@ -527,6 +529,16 @@ async def new_from_dice(menu, label, item):
     import seed
     return await seed.new_from_dice(item.arg)
 
+async def pick_new_codex32(menu, label, item):
+    import seed
+    byte_length, ephemeral = item.arg
+    return await seed.make_new_codex32_wallet(byte_length, ephemeral)
+
+async def new_codex32_from_dice(menu, label, item):
+    import seed
+    byte_length, ephemeral = item.arg
+    return await seed.new_codex32_from_dice(byte_length, ephemeral)
+
 async def any_active_duress_ux():
     from trick_pins import tp
     tp.reload()
@@ -650,6 +662,25 @@ def render_master_secrets(mode, raw, node):
         raise ValueError(mode)
 
     return title, msg, qr, qr_alnum
+
+async def view_codex32_secret(*a):
+    if not await ux_confirm('The next screen shows the complete Codex32 share. '
+                            'Anyone with it may control this wallet.'):
+        return
+
+    import stash
+    from glob import dis
+    from seed import show_codex32
+
+    dis.fullscreen('Wait...')
+    with stash.SensitiveValues(enforce_delta=True) as sv:
+        share = sv.codex32_share()
+        if not share:
+            return await ux_show_story('Current secret is not stored as Codex32.',
+                                       title='Unavailable')
+        value = share.to_string()
+
+    await show_codex32(value, is_new=False)
 
 async def view_seed_words(*a):
     if not await ux_confirm('The next screen will show the secret seed words'
@@ -1458,6 +1489,83 @@ async def import_xprv(_1, _2, item):
 
     await import_extended_key_as_secret(extended_key, ephemeral, origin='Imported XPRV')
     # not reached; will do reset.
+
+async def import_codex32_as_secret(value, ephemeral, origin=None):
+    from codex32 import Share
+    import seed
+
+    try:
+        share = Share.parse(value.strip().replace(' ', ''))
+    except Exception as exc:
+        await ux_show_story('Unable to parse Codex32 share.\n\n%s' % exc,
+                            title='FAILED')
+        return
+
+    if not share.is_secret_share():
+        if not await ux_confirm(
+                "This is share '%s', not the recovered secret share 's'. "
+                "Loading it creates the wallet derived from this individual share."
+                % share.index, title='Share Wallet'):
+            return
+
+    try:
+        encoded = seed.codex32_to_encoded_secret(share)
+        if ephemeral:
+            await seed.set_ephemeral_seed(encoded, origin=origin or 'Imported Codex32')
+        else:
+            seed.set_seed_value(encoded=encoded)
+        goto_top_menu(first_time=not ephemeral)
+    except Exception as exc:
+        await ux_show_story('Failed to import.\n\n%s\n%s' %
+                            (exc, problem_file_line(exc)), title='FAILED')
+
+async def codex32_from_file(choice):
+    def contains_codex32(fname):
+        try:
+            with open(fname, 'rt') as fd:
+                return any(('ms1' in line.lower()) or ('cc1' in line.lower())
+                           for line in fd)
+        except OSError:
+            return False
+
+    fn = await file_picker(suffix='.txt', min_size=48, max_size=512,
+                           taster=contains_codex32,
+                           none_msg='Must contain Codex32.', **choice)
+    if not fn:
+        return
+
+    with CardSlot(readonly=True, **choice):
+        with open(fn, 'rt') as fd:
+            for line in fd:
+                value = line.strip().replace(' ', '')
+                if value[:3].lower() in ('ms1', 'cc1'):
+                    return value
+
+async def import_codex32_share(intro=None, title=None, input_value=''):
+    from glob import NFC
+
+    choice = await import_export_prompt(
+        'Codex32 share', is_import=True, intro=intro or '', title=title,
+        key0='to enter manually', force_prompt=True)
+    if choice == KEY_CANCEL:
+        return False
+    if choice == KEY_NFC:
+        return await NFC.read_codex32()
+    if choice == KEY_QR:
+        from ux_q1 import QRScannerInteraction
+        return await QRScannerInteraction().scan_codex32('Scan Codex32 share')
+    if choice == '0':
+        return await ux_enter_codex32(value=input_value)
+    return await codex32_from_file(choice)
+
+async def import_codex32(_1, _2, item):
+    ephemeral = item.arg
+    if not ephemeral:
+        assert not pa.has_secrets()
+
+    value = await import_codex32_share()
+    if value:
+        await import_codex32_as_secret(value, ephemeral, 'Imported Codex32')
 
 async def need_clear_seed(*a):
     await ux_show_story('''\
@@ -2552,5 +2660,172 @@ async def pushtx_setup_menu(*a):
     choices.append(MenuItem("Disable", f=doit, arg=(None,)))
 
     return MenuSystem(choices, chosen=cur)
+
+async def shamir_share_story(menu, label, item):
+    import ngu
+    from glob import NFC, dis
+    from msgsign import write_sig_file
+
+    value, uid = item.arg
+    index = value[8]
+    name = "Share '%s'" % index
+    while True:
+        choice = await import_export_prompt(name, title=name,
+                                            intro=' '.join(chunk_address(value)))
+        if choice == KEY_CANCEL:
+            return
+        if choice == KEY_QR:
+            await show_qr_code(value.upper(), is_alnum=True, msg=name,
+                               is_secret=True)
+        elif choice == KEY_NFC:
+            await NFC.share_text(value, prompt=name, is_secret=True)
+        else:
+            try:
+                dis.fullscreen('Saving...')
+                with CardSlot(**choice) as card:
+                    fname, nice = card.pick_filename('%s_share_%s.txt' % (uid, index))
+                    with open(fname, 'wt') as fd:
+                        fd.write(value)
+                    digest = ngu.hash.sha256s(value.encode())
+                    sig_name = write_sig_file([(digest, fname)])
+                await ux_show_story('%s written:\n\n%s\n\nSignature:\n\n%s' %
+                                    (name, nice, sig_name))
+            except CardMissingError:
+                await needs_microsd()
+            except Exception as exc:
+                await ux_show_story('Failed to write.\n\n%s\n%s' %
+                                    (exc, problem_file_line(exc)))
+
+async def shamir_shares_export_menu(shares, threshold, uid):
+    items = [MenuItem('%d of %d [%s]' % (threshold, len(shares), uid))]
+    items.extend(MenuItem("Share '%s'" % value[8], f=shamir_share_story,
+                          arg=(value, uid)) for value in shares)
+    return MenuSystem(items)
+
+async def codex32_shamir_split(*a):
+    import ngu, stash
+    from codex32 import (CC_HRP, CHARSET, IDX_ORDER, MS_HRP, SECRET,
+                         Share, generate_share)
+    from glob import dis
+    from seed import random_codex32_id
+
+    if not await ux_confirm(
+            "Split the current wallet using Codex32 Shamir sharing. Each split "
+            "uses fresh randomness and a new ID. Fewer than the threshold "
+            "shares reveal no information about the secret.",
+            title='Codex32 Split'):
+        return
+
+    count = await ux_enter_number('Number of shares (2-9):', 9, can_cancel=True)
+    if not count or count < 2:
+        return
+    threshold = await ux_enter_number('Threshold (2-n):', count, can_cancel=True)
+    if not threshold or threshold < 2:
+        return
+
+    dis.fullscreen('Generating...')
+    uid = random_codex32_id()
+    with stash.SensitiveValues(enforce_delta=True) as sv:
+        current = sv.codex32_share()
+        if current:
+            secret_share = Share(current.hrp, uid, current.payload, SECRET, threshold)
+        else:
+            if sv.mode == 'master' and len(sv.raw) in (16, 32, 64):
+                secret = sv.raw
+                hrp = MS_HRP
+            else:
+                secret = sv.node.chain_code() + sv.node.privkey()
+                hrp = CC_HRP
+            sv.register(secret)
+            secret_share = Share.from_seed(secret, hrp, uid, SECRET, threshold)
+
+        basis = [secret_share]
+        shares = []
+        for pos in range(1, threshold):
+            index = IDX_ORDER[pos]
+            payload = ''.join(CHARSET[b & 31]
+                              for b in ngu.random.bytes(len(secret_share.payload)))
+            share = Share(secret_share.hrp, uid, payload, index, threshold)
+            basis.append(share)
+            shares.append(share.to_string())
+
+    for pos in range(threshold, count + 1):
+        shares.append(generate_share(basis, IDX_ORDER[pos]).to_string())
+
+    intro = '%d shares; threshold %d; ID %s\n\n' % (count, threshold, uid)
+    intro += '\n\n'.join("Share '%s':\n%s" %
+                          (value[8], ' '.join(chunk_address(value)))
+                          for value in shares)
+    intro += '\n\nPress (1) to export individual shares.'
+
+    while True:
+        ch = await ux_show_story(intro, title='Codex32 Shares', escape='1',
+                                 sensitive=True)
+        if ch == '1':
+            if await ux_confirm('Keep threshold-or-more shares on separate devices.',
+                                title='WARNING'):
+                submenu = await shamir_shares_export_menu(shares, threshold, uid)
+                the_ux.push(submenu)
+                await submenu.interact()
+        elif await ux_confirm('Discard this split and exit?'):
+            return
+
+async def codex32_shamir_restore(menu, label, item):
+    from codex32 import SECRET, Share, generate_share
+    from glob import dis
+
+    ephemeral = item.arg
+    if not ephemeral:
+        assert not pa.has_secrets()
+
+    if await ux_show_story(
+            'Import shares from one Codex32 set. Their HRP, ID, threshold and '
+            'length must match. Order does not matter.') == 'x':
+        return
+
+    expected = None
+    shares = set()
+    while expected is None or len(shares) < expected[2]:
+        intro = 'Collected: %d\nThreshold: %s\nID: %s' % (
+            len(shares), expected[2] if expected else '?',
+            expected[1] if expected else '?')
+        prefix = '' if not expected else expected[0] + '1' + str(expected[2]) + expected[1]
+        value = await import_codex32_share(intro, 'Shamir Recover', prefix)
+        if value is False:
+            if not shares or await ux_confirm('Discard collected shares?'):
+                return
+            continue
+        if not value:
+            continue
+
+        try:
+            share = Share.parse(value.strip().replace(' ', ''))
+        except Exception as exc:
+            await ux_show_story('Unable to parse Codex32 share.\n\n%s' % exc,
+                                title='FAILED')
+            continue
+        if share.is_secret_share():
+            await ux_show_story("Use 'Import Codex32' for secret share 's'.",
+                                title='FAILED')
+            continue
+        if share in shares:
+            await ux_show_story('That share was already collected.', title='FAILED')
+            continue
+
+        details = (share.hrp, share.uid, share.threshold, len(share))
+        if expected and details != expected:
+            await ux_show_story('Share set does not match the first share.',
+                                title='FAILED')
+            continue
+        expected = details
+        shares.add(share)
+
+    dis.fullscreen('Recovering...')
+    try:
+        recovered = generate_share(list(shares), SECRET)
+        await import_codex32_as_secret(recovered.to_string(), ephemeral,
+                                       'Recovered Codex32')
+    except Exception as exc:
+        await ux_show_story('Failed to recover.\n\n%s' % exc, title='FAILED')
 
 # EOF

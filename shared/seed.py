@@ -13,12 +13,12 @@
 import ngu, uctypes, bip39, random, version
 from ucollections import OrderedDict
 from menu import MenuItem, MenuSystem
-from utils import xfp2str, parse_extended_key, swab32
+from utils import xfp2str, parse_extended_key, swab32, chunk_address
 from utils import deserialize_secret, problem_file_line, wipe_if_deltamode
 from utils import to_ascii_printable
 from uhashlib import sha256
 from ux import ux_show_story, the_ux, ux_dramatic_pause, ux_confirm, OK, X
-from ux import PressRelease, ux_input_text, show_qr_code, ux_clear_keys
+from ux import PressRelease, ux_input_text, show_qr_code, ux_clear_keys, ux_enter_codex32
 from actions import goto_top_menu
 from stash import SecretStash, SensitiveValues, blank_object
 from ubinascii import hexlify as b2a_hex
@@ -659,6 +659,111 @@ def generate_seed():
     # hash to combine the sources and mitigate any possible bias
     return ngu.hash.sha256d(seed + a + b)
 
+def random_codex32_id():
+    from codex32 import CHARSET
+    return ''.join(CHARSET[b & 31] for b in ngu.random.bytes(4))
+
+async def show_codex32(c32, ephemeral=False, is_new=True):
+    from glob import NFC
+
+    title = 'Record Codex32' if is_new else 'Codex32 Share'
+    msg = ' '.join(chunk_address(c32))
+    escape = ''
+
+    if is_new:
+        escape += '04'
+        msg += '\n\nID: %s' % c32[4:8]
+        msg += '\n\nPress (0) to change ID or (4) to mix in dice rolls.'
+        if ephemeral:
+            escape += '6'
+            msg += ' Press (6) to skip the verification.'
+
+    if not version.has_qwerty:
+        escape += '1'
+        msg += '\n\nPress (1) to view as QR.'
+        if NFC:
+            escape += '3'
+            msg += ' Press (3) to share via NFC.'
+
+    while True:
+        ch = await ux_show_story(msg, title=title if version.has_qwerty else None,
+                                 escape=escape, sensitive=True,
+                                 hint_icons=KEY_QR + (KEY_NFC if NFC else ''))
+        if ch in ('1' + KEY_QR):
+            await show_qr_code(c32.upper(), True, is_secret=True)
+        elif NFC and ch in ('3' + KEY_NFC):
+            await NFC.share_text(c32, is_secret=True)
+        else:
+            return ch
+
+async def approve_codex32(seed, ephemeral=False):
+    from codex32 import CHARSET, MS_HRP, SECRET, Share
+
+    uid = random_codex32_id()
+    while True:
+        share = Share.from_seed(seed, MS_HRP, uid, SECRET, 0)
+        encoded = share.to_string()
+        ch = await show_codex32(encoded, ephemeral=ephemeral)
+        if ch == 'x':
+            if await ux_confirm('Throw away this secret and stop?'):
+                return
+            continue
+
+        if ch == '0':
+            value = await ux_input_text('', confirm_exit=False, bech32_only=True,
+                                        min_len=4, max_len=4)
+            if value and len(value) == 4 and all(c in CHARSET for c in value):
+                uid = value
+            elif value:
+                await ux_show_story('ID must be four Codex32 characters.', title='FAILED')
+            continue
+
+        if ch == '4':
+            nwords = 12 if len(seed) == 16 else 24
+            count, mixed = await add_dice_rolls(0, seed, False, nwords=nwords)
+            if count:
+                seed = mixed[:len(seed)]
+            continue
+
+        if ch == '6' and ephemeral:
+            if await ux_confirm('Skip verification of the recorded Codex32 share?'):
+                return share
+            continue
+
+        check = await ux_enter_codex32(scan_ok=False)
+        if check == encoded:
+            return share
+        if check:
+            await ux_show_story('That Codex32 share did not match.', title='Try Again')
+        elif await ux_confirm('Throw away this secret and stop?'):
+            return
+
+async def make_new_codex32_wallet(byte_length, ephemeral=False, seed=None):
+    if seed is None:
+        await ux_dramatic_pause('Generating...', 3)
+        seed = generate_seed()[:byte_length]
+
+    share = await approve_codex32(seed, ephemeral)
+    if not share:
+        return
+
+    encoded = SecretStash.encode(codex32=share)
+    if ephemeral:
+        await set_ephemeral_seed(encoded, origin='Generated Codex32')
+    else:
+        set_seed_value(encoded=encoded)
+    goto_top_menu(first_time=not ephemeral)
+
+async def new_codex32_from_dice(byte_length, ephemeral=False):
+    prompt = '\n\nPress %s to continue, %s to exit.' % (OK, X)
+    if await ux_show_story(DICE_ONLY_WARNING + prompt, title='WARNING') == 'x':
+        return
+
+    nwords = 12 if byte_length == 16 else 24
+    count, seed = await add_dice_rolls(0, b'', True, nwords=nwords, enforce=True)
+    if count:
+        await make_new_codex32_wallet(byte_length, ephemeral, seed[:byte_length])
+
 def update_entropy_screen(title, count, target, unit, action, prompt, mk_title=None):
     # progress display while collecting user entropy
     if version.has_qwerty:
@@ -974,6 +1079,9 @@ def xprv_to_encoded_secret(xprv):
     nv = SecretStash.encode(xprv=node)
     node.blank()
     return nv, chain  # need to know chain
+
+def codex32_to_encoded_secret(share):
+    return SecretStash.encode(codex32=share)
 
 
 def set_seed_value(words=None, encoded=None, chain=None):
@@ -1466,6 +1574,7 @@ class EphemeralSeedMenu(MenuSystem):
             MenuItem("Tapsigner Backup", f=import_tapsigner_backup_file, arg=True), # ephemeral=True
             MenuItem("Coldcard Backup", f=restore_backup, arg=True),  # tmp=True
             MenuItem("Restore Seed XOR", f=xor_restore_temporary),
+            MenuItem("Codex32", menu=make_codex32_menu, arg=True),
         ]
 
         return rv
@@ -1487,6 +1596,23 @@ async def make_ephemeral_seed_menu(*a):
 
     rv = EphemeralSeedMenu.construct()
     return EphemeralSeedMenu(rv)
+
+async def make_codex32_menu(menu, label, item):
+    from actions import (codex32_shamir_restore, import_codex32,
+                         new_codex32_from_dice, pick_new_codex32)
+
+    ephemeral = bool(item.arg)
+    generated = [
+        MenuItem('128-bit', f=pick_new_codex32, arg=(16, ephemeral)),
+        MenuItem('256-bit', f=pick_new_codex32, arg=(32, ephemeral)),
+        MenuItem('128-bit Dice', f=new_codex32_from_dice, arg=(16, ephemeral)),
+        MenuItem('256-bit Dice', f=new_codex32_from_dice, arg=(32, ephemeral)),
+    ]
+    return MenuSystem([
+        MenuItem('Generate', menu=generated),
+        MenuItem('Import Codex32', f=import_codex32, arg=ephemeral),
+        MenuItem('Shamir Recover', f=codex32_shamir_restore, arg=ephemeral),
+    ])
 
 async def start_b39_pw(menu, label, item):
     # Menu item for top-level "Passphrase" item - take in a BIP-39 passphrase

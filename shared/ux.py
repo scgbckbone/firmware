@@ -357,6 +357,12 @@ async def ux_enter_bip32_index(prompt, can_cancel=True, unlimited=False):
 
     return await ux_enter_number(prompt=prompt, max_value=max_value, can_cancel=can_cancel)
 
+async def ux_enter_codex32(value='', scan_ok=True):
+    # Spaces may be inserted to group the text and are ignored on return.
+    rv = await ux_input_text(value, bech32_only=True, confirm_exit=True,
+                             scan_ok=scan_ok, max_len=191, min_len=48)
+    return rv.replace(' ', '') if rv else rv
+
 def _import_prompt_builder(title, no_qr, no_nfc, slot_b_only=False, key0=None, key6=None):
     from glob import NFC, VD
 
