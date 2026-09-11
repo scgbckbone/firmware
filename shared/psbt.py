@@ -344,7 +344,8 @@ class psbtProxy:
 # Track details of each output of PSBT
 #
 class psbtOutputProxy(psbtProxy):
-    no_keys = { PSBT_OUT_REDEEM_SCRIPT, PSBT_OUT_WITNESS_SCRIPT }
+    no_keys = { PSBT_OUT_REDEEM_SCRIPT, PSBT_OUT_WITNESS_SCRIPT, PSBT_OUT_AMOUNT,
+                PSBT_OUT_SCRIPT }
 
     blank_flds = ('unknown', 'subpaths', 'redeem_script', 'witness_script',
                   'is_change', 'num_our_keys', 'amount', 'script', 'attestation')
@@ -592,8 +593,10 @@ class psbtInputProxy(psbtProxy):
 
     # only part-sigs have a key to be stored.
     no_keys = { PSBT_IN_NON_WITNESS_UTXO, PSBT_IN_WITNESS_UTXO, PSBT_IN_SIGHASH_TYPE,
-                     PSBT_IN_REDEEM_SCRIPT, PSBT_IN_WITNESS_SCRIPT, PSBT_IN_FINAL_SCRIPTSIG,
-                     PSBT_IN_FINAL_SCRIPTWITNESS }
+                PSBT_IN_REDEEM_SCRIPT, PSBT_IN_WITNESS_SCRIPT, PSBT_IN_FINAL_SCRIPTSIG,
+                PSBT_IN_FINAL_SCRIPTWITNESS, PSBT_IN_PREVIOUS_TXID, PSBT_IN_OUTPUT_INDEX,
+                PSBT_IN_SEQUENCE, PSBT_IN_REQUIRED_TIME_LOCKTIME,
+                PSBT_IN_REQUIRED_HEIGHT_LOCKTIME }
 
     blank_flds = (
         'unknown', 'utxo', 'witness_utxo', 'sighash', 'redeem_script', 'witness_script',
@@ -1071,7 +1074,10 @@ class psbtInputProxy(psbtProxy):
 class psbtObject(psbtProxy):
     "Just? parse and store"
     short_values = { PSBT_GLOBAL_TX_MODIFIABLE }
-    no_keys = { PSBT_GLOBAL_UNSIGNED_TX }
+    no_keys = { PSBT_GLOBAL_UNSIGNED_TX, PSBT_GLOBAL_TX_VERSION,
+                PSBT_GLOBAL_FALLBACK_LOCKTIME, PSBT_GLOBAL_INPUT_COUNT,
+                PSBT_GLOBAL_OUTPUT_COUNT, PSBT_GLOBAL_TX_MODIFIABLE,
+                PSBT_GLOBAL_VERSION }
 
     def __init__(self):
         super().__init__()
@@ -1154,10 +1160,14 @@ class psbtObject(psbtProxy):
         elif kt == PSBT_GLOBAL_FALLBACK_LOCKTIME:
             self.fallback_locktime = unpack("<I", self.get(val))[0]
         elif kt == PSBT_GLOBAL_INPUT_COUNT:
-            self.num_inputs = deser_compact_size(BytesIO(self.get(val)))
+            raw = self.get(val)
+            self.num_inputs = deser_compact_size(BytesIO(raw))
+            assert raw == ser_compact_size(self.num_inputs), "invalid input count"
             self.has_gic = True
         elif kt == PSBT_GLOBAL_OUTPUT_COUNT:
-            self.num_outputs = deser_compact_size(BytesIO(self.get(val)))
+            raw = self.get(val)
+            self.num_outputs = deser_compact_size(BytesIO(raw))
+            assert raw == ser_compact_size(self.num_outputs), "invalid output count"
             self.has_goc = True
         elif kt == PSBT_GLOBAL_TX_MODIFIABLE:
             # bytes of length 1 (tx modifiable in short_values)
@@ -1506,9 +1516,9 @@ class psbtObject(psbtProxy):
             # verision is provided in PSBT - take it as given
             assert self.version in (0,2)
         else:
-            # PSBT version is not defined
-            # global unsigned tx is only allowed in v0
-            self.version = 2 if self.txn is None else 0
+            # PSBTv0 may omit its version, but PSBTv2 must specify version 2.
+            assert self.txn, "v2 requires global version"
+            self.version = 0
 
         self.is_v2 = self.version is not None and self.version >= 2
 
