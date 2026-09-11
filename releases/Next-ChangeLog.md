@@ -12,6 +12,10 @@ your addition and anything else already in this file.**
 
 - Enhancement: Support per-input required height and time locktimes in PSBTv2 transactions.
 
+- Bugfix: Harden PSBTv2 parsing by rejecting key data on singleton fields,
+  malformed global input/output count encodings, and files missing the required
+  global version.
+
 
 # Mk Specific Changes
 
@@ -25,4 +29,3 @@ your addition and anything else already in this file.**
 ## 1.5.3Q - 2026-09-xx
 
 - tbd
-
