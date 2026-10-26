@@ -988,33 +988,6 @@ class psbtInputProxy(psbtProxy):
 
         return addr_or_pubkey
 
-    def validate_presigned_multisig(self, psbt):
-        # Only the wallet selected by inputs needing our signature may validate
-        # presigned multisig. Never let a completed input select a policy wallet.
-        wallet = psbt.active_miniscript
-        if not wallet or not self.is_miniscript or self.af == AF_P2TR:
-            return
-        try:
-            desc = wallet.to_descriptor()
-            if not desc.is_basic_multisig or wallet.addr_fmt != self.af:
-                return
-            paths = [self.handle_zero_xfp(self.parse_xfp_path(v), psbt.my_xfp)
-                     for k, v in self.subpaths or []]
-            if not wallet.matching_subpaths(paths):
-                return
-            wallet.validate_script_pubkey(self.utxo_spk, paths)
-            script = self.redeem_or_witness_script()
-            if self.af in (AF_P2WSH, AF_P2WSH_P2SH) and not self.witness_script:
-                return
-            if self.af == AF_P2SH and (not self.redeem_script or self.witness_script):
-                return
-            spk, _ = chains.current_chain().script_pubkey(self.af, script=script)
-            if spk == self.utxo_spk:
-                self.script_validated = True
-        except Exception:
-            # Malformed/foreign completed inputs stay in the PSBT for the host.
-            return
-
     def determine_my_signing_key(self, my_idx, addr_or_pubkey, my_xfp, psbt, parsed_subpaths, utxo):
         # See what it takes to sign this particular input
         # - type of script
@@ -2449,9 +2422,32 @@ class psbtObject(psbtProxy):
 
             del utxo
 
+        # Only the wallet selected by inputs needing our signature may validate
+        # presigned multisig. Never let a completed input select a policy wallet.
+        wallet = self.active_miniscript
         for inp in self.inputs:
-            if inp.fully_signed:
-                inp.validate_presigned_multisig(self)
+            if not inp.fully_signed or not wallet or not inp.is_miniscript or inp.af == AF_P2TR:
+                continue
+            try:
+                desc = wallet.to_descriptor()
+                if not desc.is_basic_multisig or wallet.addr_fmt != inp.af:
+                    continue
+                paths = [inp.handle_zero_xfp(inp.parse_xfp_path(v), self.my_xfp)
+                         for k, v in inp.subpaths or []]
+                if not wallet.matching_subpaths(paths):
+                    continue
+                wallet.validate_script_pubkey(inp.utxo_spk, paths)
+                script = inp.redeem_or_witness_script()
+                if inp.af in (AF_P2WSH, AF_P2WSH_P2SH) and not inp.witness_script:
+                    continue
+                if inp.af == AF_P2SH and (not inp.redeem_script or inp.witness_script):
+                    continue
+                spk, _ = chains.current_chain().script_pubkey(inp.af, script=script)
+                if spk == inp.utxo_spk:
+                    inp.script_validated = True
+            except Exception:
+                # Malformed/foreign completed inputs stay in the PSBT for the host.
+                continue
 
         if self.por322:
             if not self.inputs[0].sp_idxs:
